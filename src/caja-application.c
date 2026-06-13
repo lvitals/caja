@@ -40,6 +40,7 @@
 #include <gdk/gdkx.h>
 #ifdef HAVE_WAYLAND
 #include <gdk/gdkwayland.h>
+#include <gtk-layer-shell/gtk-layer-shell.h>
 #endif
 #include <gtk/gtk.h>
 #include <libnotify/notify.h>
@@ -50,9 +51,11 @@
 
 #include <eel/eel-gtk-extensions.h>
 #include <eel/eel-gtk-macros.h>
+#include <eel/eel-background.h>
 #include <eel/eel-stock-dialogs.h>
 
 #include <libcaja-private/caja-debug-log.h>
+#include <libcaja-private/caja-directory-background.h>
 #include <libcaja-private/caja-file-utilities.h>
 #include <libcaja-private/caja-global-preferences.h>
 #include <libcaja-private/caja-lib-self-check-functions.h>
@@ -101,6 +104,7 @@
 
 /* Keeps track of all the desktop windows. */
 static GList *caja_application_desktop_windows;
+static GList *caja_application_desktop_background_windows;
 
 /* Keeps track of all the object windows */
 static GList *caja_application_spatial_window_list;
@@ -700,8 +704,163 @@ selection_clear_event_cb (GtkWidget	        *widget,
     caja_application_desktop_windows =
         g_list_remove (caja_application_desktop_windows, window);
 
+    if (caja_application_desktop_windows == NULL)
+    {
+        g_list_free_full (caja_application_desktop_background_windows,
+                          (GDestroyNotify) gtk_widget_destroy);
+        caja_application_desktop_background_windows = NULL;
+    }
+
     return TRUE;
 }
+
+#ifdef HAVE_WAYLAND
+static GdkMonitor *
+caja_application_get_wayland_primary_monitor (GdkDisplay *display)
+{
+    GdkMonitor *primary;
+    GdkMonitor *largest;
+    int i, n_monitors, max_pixels;
+
+    primary = gdk_display_get_primary_monitor (display);
+    if (primary != NULL) {
+        return primary;
+    }
+
+    n_monitors = gdk_display_get_n_monitors (display);
+
+    /* Prefer the monitor at (0,0) as primary fallback */
+    for (i = 0; i < n_monitors; i++)
+    {
+        GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+        GdkRectangle geometry = {0};
+
+        gdk_monitor_get_geometry (monitor, &geometry);
+        if (geometry.x == 0 && geometry.y == 0) {
+            return monitor;
+        }
+    }
+
+    /* Then prefer the largest monitor */
+    largest = NULL;
+    max_pixels = 0;
+    for (i = 0; i < n_monitors; i++)
+    {
+        GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+        GdkRectangle geometry = {0};
+        int pixels;
+
+        gdk_monitor_get_geometry (monitor, &geometry);
+        pixels = geometry.width * geometry.height;
+        if (pixels > max_pixels) {
+            max_pixels = pixels;
+            largest = monitor;
+        }
+    }
+
+    if (largest != NULL) {
+        return largest;
+    }
+
+    /* Last resort: first monitor */
+    if (n_monitors > 0) {
+        return gdk_display_get_monitor (display, 0);
+    }
+
+    return NULL;
+}
+
+static gboolean
+desktop_background_window_draw (GtkWidget *widget,
+                                cairo_t   *cr)
+{
+    eel_background_draw (widget, cr);
+    return TRUE;
+}
+
+static GtkWidget *
+caja_application_create_desktop_background_window (CajaApplication *application,
+                                                  GdkDisplay      *display,
+                                                  GdkMonitor      *monitor)
+{
+    GtkWidget *window;
+    GdkRectangle geometry = {0};
+
+    g_return_val_if_fail (GDK_IS_WAYLAND_DISPLAY (display), NULL);
+    g_return_val_if_fail (monitor != NULL, NULL);
+
+    gdk_monitor_get_geometry (monitor, &geometry);
+
+    window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_application (GTK_WINDOW (window), GTK_APPLICATION (application));
+    gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+    gtk_window_set_resizable (GTK_WINDOW (window), FALSE);
+    gtk_window_set_default_size (GTK_WINDOW (window), -1, -1);
+    gtk_widget_set_size_request (window, geometry.width, geometry.height);
+    gtk_widget_set_app_paintable (window, TRUE);
+    gtk_widget_set_name (window, "caja-desktop-background-window");
+    g_object_set_data (G_OBJECT (window), "caja-desktop-monitor", monitor);
+
+    gtk_layer_init_for_window (GTK_WINDOW (window));
+    gtk_layer_set_monitor (GTK_WINDOW (window), monitor);
+    gtk_layer_set_layer (GTK_WINDOW (window), GTK_LAYER_SHELL_LAYER_BACKGROUND);
+    gtk_layer_set_namespace (GTK_WINDOW (window), "desktop-background");
+    gtk_layer_set_anchor (GTK_WINDOW (window), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
+    gtk_layer_set_anchor (GTK_WINDOW (window), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
+    gtk_layer_set_anchor (GTK_WINDOW (window), GTK_LAYER_SHELL_EDGE_LEFT, TRUE);
+    gtk_layer_set_anchor (GTK_WINDOW (window), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
+    gtk_layer_set_keyboard_mode (GTK_WINDOW (window), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+
+    caja_connect_desktop_widget_background_to_settings (window);
+    g_signal_connect (window, "draw",
+                      G_CALLBACK (desktop_background_window_draw), NULL);
+
+    gtk_widget_show (window);
+
+    return window;
+}
+
+static void
+caja_application_create_desktop_background_windows (CajaApplication *application,
+                                                   GdkDisplay      *display,
+                                                   GdkMonitor      *primary)
+{
+    int i, n_monitors;
+
+    g_return_if_fail (caja_application_desktop_background_windows == NULL);
+    g_return_if_fail (GDK_IS_WAYLAND_DISPLAY (display));
+
+    n_monitors = gdk_display_get_n_monitors (display);
+    for (i = 0; i < n_monitors; i++)
+    {
+        GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+        GtkWidget *window;
+        GList *l;
+        gboolean has_desktop = FALSE;
+
+        for (l = caja_application_desktop_windows; l != NULL; l = l->next)
+        {
+            if (g_object_get_data (G_OBJECT (l->data), "caja-desktop-monitor") == monitor)
+            {
+                has_desktop = TRUE;
+                break;
+            }
+        }
+
+        if (has_desktop || monitor == primary) {
+            continue;
+        }
+
+        window = caja_application_create_desktop_background_window (application,
+                                                                    display,
+                                                                    monitor);
+        if (window != NULL) {
+            caja_application_desktop_background_windows =
+                g_list_prepend (caja_application_desktop_background_windows, window);
+        }
+    }
+}
+#endif
 
 static gboolean
 caja_application_create_desktop_window (CajaApplication *application,
@@ -752,16 +911,31 @@ caja_application_create_desktop_windows (CajaApplication *application)
 #ifdef HAVE_WAYLAND
     if (GDK_IS_WAYLAND_DISPLAY (display))
     {
-        int i;
-        int n_monitors = gdk_display_get_n_monitors (display);
-        for (i = 0; i < n_monitors; i++)
-        {
-            caja_application_create_desktop_window (application, display,
-                                                    gdk_display_get_monitor (display, i));
-        }
+        GdkMonitor *primary;
+
+        primary = caja_application_get_wayland_primary_monitor (display);
+
+        /*
+         * On Wayland we create only one desktop window, placed on the
+         * primary monitor.  Creating one window per monitor causes every
+         * window to load the full Desktop directory, which duplicates icons
+         * on all monitors and makes each window render the wallpaper
+         * independently.  When mate_bg_create_surface() receives a surface
+         * size from the wrong monitor (before wl_surface.enter has arrived)
+         * the resulting surface is smaller than the window and
+         * CAIRO_EXTEND_REPEAT tiles it visibly.
+         *
+         * Secondary monitors get background-only layer-shell surfaces that
+         * use the same MateBG settings but do not load the Desktop directory.
+         */
+        caja_application_create_desktop_window (application, display, primary);
+
         if (caja_application_desktop_windows == NULL) {
             caja_application_create_desktop_window (application, display, NULL);
         }
+        caja_application_create_desktop_background_windows (application,
+                                                           display,
+                                                           primary);
         return;
     }
 #endif
@@ -782,6 +956,9 @@ caja_application_close_desktop (void)
 {
     if (caja_application_desktop_windows != NULL)
     {
+        g_list_free_full (caja_application_desktop_background_windows,
+                          (GDestroyNotify) gtk_widget_destroy);
+        caja_application_desktop_background_windows = NULL;
         g_list_free_full (caja_application_desktop_windows, (GDestroyNotify) gtk_widget_destroy);
         caja_application_desktop_windows = NULL;
     }

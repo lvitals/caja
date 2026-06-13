@@ -304,9 +304,27 @@ eel_background_set_use_base (EelBackground *self,
 }
 
 static void
+get_total_screen_geometry (GdkDisplay *display, GdkRectangle *total_geometry)
+{
+    int n_monitors = gdk_display_get_n_monitors (display);
+    int i;
+
+    for (i = 0; i < n_monitors; i++) {
+        GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+        GdkRectangle geometry;
+        gdk_monitor_get_geometry (monitor, &geometry);
+        if (i == 0) {
+            *total_geometry = geometry;
+        } else {
+            gdk_rectangle_union (total_geometry, &geometry, total_geometry);
+        }
+    }
+}
+
+static void
 drawable_get_adjusted_size (EelBackground *self,
-                            int		  *width,
-                            int	          *height)
+                            int           *width,
+                            int           *height)
 {
     if (self->details->is_desktop)
     {
@@ -319,11 +337,14 @@ drawable_get_adjusted_size (EelBackground *self,
                *height = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / scale;
         }
         else {
-                GdkRectangle workarea = {0};
-                gdk_monitor_get_workarea(gdk_display_get_monitor_at_window(gdk_display_get_default(),
-                                        gtk_widget_get_window (self->details->widget)), &workarea);
-                *width = workarea.width;
-                *height = workarea.height;
+                GdkRectangle total_geometry = {0};
+                GdkDisplay *display = gdk_display_get_default ();
+
+                /* On Wayland, if we want spanned wallpaper, we need to return
+                 * the total screen geometry. */
+                get_total_screen_geometry (display, &total_geometry);
+                *width = total_geometry.width;
+                *height = total_geometry.height;
         }
     }
     else
@@ -333,6 +354,7 @@ drawable_get_adjusted_size (EelBackground *self,
         *height = gdk_window_get_height (window);
     }
 }
+
 
 static gboolean
 eel_background_ensure_realized (EelBackground *self)
@@ -406,7 +428,32 @@ eel_background_draw (GtkWidget *widget,
 
     if (self->details->bg_surface != NULL)
     {
-        cairo_set_source_surface (cr, self->details->bg_surface, 0, 0);
+        if (self->details->is_desktop && !GDK_IS_X11_DISPLAY (gdk_display_get_default ()))
+        {
+            GtkWidget *toplevel = gtk_widget_get_toplevel (widget);
+            GdkDisplay *display = gtk_widget_get_display (widget);
+            GdkMonitor *monitor = g_object_get_data (G_OBJECT (toplevel), "caja-desktop-monitor");
+            GdkRectangle geometry = {0};
+            GdkRectangle total_geometry = {0};
+
+            if (monitor == NULL) {
+                monitor = gdk_display_get_monitor_at_window (display, gtk_widget_get_window (widget));
+            }
+            if (monitor == NULL) {
+                monitor = gdk_display_get_monitor (display, 0);
+            }
+
+            gdk_monitor_get_geometry (monitor, &geometry);
+            get_total_screen_geometry (display, &total_geometry);
+
+            cairo_set_source_surface (cr, self->details->bg_surface,
+                                      -(geometry.x - total_geometry.x),
+                                      -(geometry.y - total_geometry.y));
+        }
+        else
+        {
+            cairo_set_source_surface (cr, self->details->bg_surface, 0, 0);
+        }
         cairo_pattern_set_extend (cairo_get_source (cr), CAIRO_EXTEND_REPEAT);
     } else {
         gdk_cairo_set_source_rgba (cr, &color);

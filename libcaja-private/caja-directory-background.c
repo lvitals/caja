@@ -381,11 +381,13 @@ desktop_background_weak_notify (gpointer data,
 }
 
 void
-caja_connect_desktop_background_to_settings (CajaIconContainer *icon_container)
+caja_connect_desktop_widget_background_to_settings (GtkWidget *widget)
 {
     EelBackground *background;
 
-    background = eel_get_widget_background (GTK_WIDGET (icon_container));
+    g_return_if_fail (GTK_IS_WIDGET (widget));
+
+    background = eel_get_widget_background (widget);
 
     eel_background_set_desktop (background, TRUE);
 
@@ -407,4 +409,12 @@ caja_connect_desktop_background_to_settings (CajaIconContainer *icon_container)
 
     g_object_weak_ref (G_OBJECT (background),
                        desktop_background_weak_notify, NULL);
+}
+
+void
+caja_connect_desktop_background_to_settings (CajaIconContainer *icon_container)
+{
+    g_return_if_fail (CAJA_IS_ICON_CONTAINER (icon_container));
+
+    caja_connect_desktop_widget_background_to_settings (GTK_WIDGET (icon_container));
 }

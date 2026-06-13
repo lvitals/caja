@@ -39,7 +39,7 @@ void     caja_connect_background_to_file_metadata    (GtkWidget         *widget,
                                                       CajaFile          *file,
                                                       GdkDragAction      default_drag_action);
 
+void     caja_connect_desktop_widget_background_to_settings (GtkWidget  *widget);
 void     caja_connect_desktop_background_to_settings (CajaIconContainer *icon_container);
 
 #endif	/* __CAJA_DIRECTORY_BACKGROUND_H__ */
-

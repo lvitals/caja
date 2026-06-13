@@ -117,6 +117,67 @@ get_icon_container (FMDesktopIconView *icon_view)
     return CAJA_ICON_CONTAINER (gtk_bin_get_child (GTK_BIN (icon_view)));
 }
 
+static GdkMonitor *
+get_desktop_monitor_for_widget (GtkWidget *widget,
+                                GdkDisplay *display)
+{
+    GdkWindow *window;
+    GdkMonitor *monitor;
+    GdkMonitor *largest = NULL;
+    GtkWidget *toplevel;
+    int i, n_monitors, max_pixels;
+
+    toplevel = gtk_widget_get_toplevel (widget);
+    monitor = g_object_get_data (G_OBJECT (toplevel), "caja-desktop-monitor");
+    if (monitor != NULL) {
+        return monitor;
+    }
+
+    monitor = gdk_display_get_primary_monitor (display);
+    if (monitor != NULL) {
+        return monitor;
+    }
+
+    window = gtk_widget_get_window (toplevel);
+    if (window != NULL) {
+        monitor = gdk_display_get_monitor_at_window (display, window);
+        if (monitor != NULL) {
+            return monitor;
+        }
+    }
+
+    n_monitors = gdk_display_get_n_monitors (display);
+    for (i = 0; i < n_monitors; i++) {
+        GdkRectangle geometry = {0};
+
+        monitor = gdk_display_get_monitor (display, i);
+        gdk_monitor_get_geometry (monitor, &geometry);
+        if (geometry.x == 0 && geometry.y == 0) {
+            return monitor;
+        }
+    }
+
+    max_pixels = 0;
+    for (i = 0; i < n_monitors; i++) {
+        GdkRectangle geometry = {0};
+        int pixels;
+
+        monitor = gdk_display_get_monitor (display, i);
+        gdk_monitor_get_geometry (monitor, &geometry);
+        pixels = geometry.width * geometry.height;
+        if (pixels > max_pixels) {
+            max_pixels = pixels;
+            largest = monitor;
+        }
+    }
+
+    if (largest != NULL) {
+        return largest;
+    }
+
+    return gdk_display_get_monitor (display, 0);
+}
+
 static void
 icon_container_set_workarea (CajaIconContainer *icon_container,
                              GdkScreen             *screen,
@@ -143,7 +204,7 @@ icon_container_set_workarea (CajaIconContainer *icon_container,
         scale = 1; /*wayland handles this for us*/
         GdkRectangle geometry = {0};
         GdkMonitor *monitor;
-        monitor = gdk_display_get_monitor (display, 0);
+        monitor = get_desktop_monitor_for_widget (GTK_WIDGET (icon_container), display);
         gdk_monitor_get_geometry (monitor, &geometry);
         screen_width = geometry.width;
         screen_height = geometry.height;
@@ -442,7 +503,7 @@ realized_callback (GtkWidget *widget, FMDesktopIconView *desktop_icon_view)
         /*No real root window or primary monitor in wayland unless compositors add it back*/
         GdkRectangle geometry = {0};
         GdkMonitor *monitor;
-        monitor = gdk_display_get_monitor (display, 0);
+        monitor = get_desktop_monitor_for_widget (widget, display);
         gdk_monitor_get_geometry (monitor, &geometry);
         allocation.width = geometry.width;
         allocation.height = geometry.height;
