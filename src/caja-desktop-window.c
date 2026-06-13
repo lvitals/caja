@@ -85,6 +85,7 @@ struct _CajaDesktopWindowPrivate
     gulong size_changed_id;
 
     gboolean loaded;
+    GdkMonitor *monitor;
 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (CajaDesktopWindow, caja_desktop_window,
@@ -170,8 +171,10 @@ caja_desktop_window_screen_size_changed (GdkScreen             *screen,
     {
         /*No root window or primary monitor in wayland unless compositors add it back*/
         GdkRectangle geometry = {0};
-        GdkMonitor *monitor;
-        monitor = gdk_display_get_monitor (display, 0);
+        GdkMonitor *monitor = window->details->monitor;
+        if (monitor == NULL) {
+            monitor = gdk_display_get_monitor (display, 0);
+        }
         gdk_monitor_get_geometry (monitor, &geometry);
         width_request = geometry.width;
         height_request = geometry.height;
@@ -186,6 +189,14 @@ caja_desktop_window_screen_size_changed (GdkScreen             *screen,
 CajaDesktopWindow *
 caja_desktop_window_new (CajaApplication *application,
                          GdkScreen           *screen)
+{
+    return caja_desktop_window_new_for_monitor (application, screen, NULL);
+}
+
+CajaDesktopWindow *
+caja_desktop_window_new_for_monitor (CajaApplication *application,
+                                     GdkScreen           *screen,
+                                     GdkMonitor          *monitor)
 {
     CajaDesktopWindow *window;
     int width_request, height_request;
@@ -206,9 +217,9 @@ caja_desktop_window_new (CajaApplication *application,
         *and they all do it differently. For now, use the first monitor
         */
         GdkRectangle geometry = {0};
-        GdkMonitor *monitor;
-        monitor = gdk_display_get_monitor (display, 0);
-        gdk_monitor_get_geometry (monitor, &geometry);
+        GdkMonitor *target_monitor;
+        target_monitor = monitor ? monitor : gdk_display_get_monitor (display, 0);
+        gdk_monitor_get_geometry (target_monitor, &geometry);
         width_request = geometry.width;
         height_request = geometry.height;
     }
@@ -221,6 +232,8 @@ caja_desktop_window_new (CajaApplication *application,
                               "screen", screen,
                               "decorated", FALSE,
                               NULL));
+    window->details->monitor = monitor;
+
     /* Stop wrong desktop window size in GTK 3.20*/
     /* We don't want to set a default size, which the parent does, since this */
     /* will cause the desktop window to open at the wrong size in gtk 3.20 */
@@ -237,6 +250,10 @@ caja_desktop_window_new (CajaApplication *application,
 
         /* Before the window is first realized, set it up to be a layer surface */
         gtk_layer_init_for_window (gtkwin);
+
+        if (monitor != NULL) {
+            gtk_layer_set_monitor (gtkwin, monitor);
+        }
 
         /* Order below normal windows */
         gtk_layer_set_layer (gtkwin, GTK_LAYER_SHELL_LAYER_BACKGROUND);

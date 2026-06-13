@@ -38,6 +38,9 @@
 #include <glib/gi18n.h>
 #include <gio/gio.h>
 #include <gdk/gdkx.h>
+#ifdef HAVE_WAYLAND
+#include <gdk/gdkwayland.h>
+#endif
 #include <gtk/gtk.h>
 #include <libnotify/notify.h>
 #include <sys/types.h>
@@ -700,41 +703,70 @@ selection_clear_event_cb (GtkWidget	        *widget,
     return TRUE;
 }
 
+static gboolean
+caja_application_create_desktop_window (CajaApplication *application,
+                                        GdkDisplay      *display,
+                                        GdkMonitor      *monitor)
+{
+    GtkWidget *selection_widget;
+    CajaDesktopWindow *window;
+
+    selection_widget = get_desktop_manager_selection (display);
+    if (selection_widget == NULL) {
+        return FALSE;
+    }
+
+    window = caja_desktop_window_new_for_monitor (application,
+                                                  gdk_display_get_default_screen (display),
+                                                  monitor);
+
+    g_signal_connect (selection_widget, "selection_clear_event",
+                      G_CALLBACK (selection_clear_event_cb), window);
+
+    g_signal_connect (window, "unrealize",
+                      G_CALLBACK (desktop_unrealize_cb), selection_widget);
+
+    /* We realize it immediately so that the CAJA_DESKTOP_WINDOW_ID
+       property is set so mate-settings-daemon doesn't try to set the
+       background. And we do a gdk_display_flush() to be sure X gets it. */
+    gtk_widget_realize (GTK_WIDGET (window));
+    gdk_display_flush (display);
+
+    caja_application_desktop_windows =
+        g_list_prepend (caja_application_desktop_windows, window);
+    gtk_application_add_window (GTK_APPLICATION (application),
+                                GTK_WINDOW (window));
+
+    return TRUE;
+}
+
 static void
 caja_application_create_desktop_windows (CajaApplication *application)
 {
     GdkDisplay *display;
-    GtkWidget *selection_widget;
 
     g_return_if_fail (caja_application_desktop_windows == NULL);
     g_return_if_fail (CAJA_IS_APPLICATION (application));
     display = gdk_display_get_default ();
 
-    selection_widget = get_desktop_manager_selection (display);
-
-    if (selection_widget != NULL)
+#ifdef HAVE_WAYLAND
+    if (GDK_IS_WAYLAND_DISPLAY (display))
     {
-        CajaDesktopWindow *window;
-
-        window = caja_desktop_window_new (application, gdk_display_get_default_screen (display));
-
-        g_signal_connect (selection_widget, "selection_clear_event",
-                          G_CALLBACK (selection_clear_event_cb), window);
-
-        g_signal_connect (window, "unrealize",
-                          G_CALLBACK (desktop_unrealize_cb), selection_widget);
-
-        /* We realize it immediately so that the CAJA_DESKTOP_WINDOW_ID
-           property is set so mate-settings-daemon doesn't try to set the
-           background. And we do a gdk_display_flush() to be sure X gets it. */
-        gtk_widget_realize (GTK_WIDGET (window));
-        gdk_display_flush (display);
-
-        caja_application_desktop_windows =
-            g_list_prepend (caja_application_desktop_windows, window);
-            gtk_application_add_window (GTK_APPLICATION (application),
-							    GTK_WINDOW (window));
+        int i;
+        int n_monitors = gdk_display_get_n_monitors (display);
+        for (i = 0; i < n_monitors; i++)
+        {
+            caja_application_create_desktop_window (application, display,
+                                                    gdk_display_get_monitor (display, i));
+        }
+        if (caja_application_desktop_windows == NULL) {
+            caja_application_create_desktop_window (application, display, NULL);
+        }
+        return;
     }
+#endif
+
+    caja_application_create_desktop_window (application, display, NULL);
 }
 
 static void
@@ -2385,4 +2417,3 @@ caja_application_new (void)
                     "flags", G_APPLICATION_HANDLES_OPEN,
                      NULL);
 }
-
