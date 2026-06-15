@@ -71,6 +71,10 @@
 #include "fm-error-reporting.h"
 #include "caja-audio-mime-types.h"
 
+#ifdef HAVE_WAYLAND
+#include <gdk/gdkwayland.h>
+#endif
+
 #define POPUP_PATH_ICON_APPEARANCE		"/selection/Icon Appearance Items"
 
 enum
@@ -317,6 +321,22 @@ get_stored_icon_position_callback (CajaIconContainer *container,
                      &position->x, &position->y, &c) == 2;
     g_free (position_string);
 
+#ifdef HAVE_WAYLAND
+    if (position_good && FM_IS_DESKTOP_ICON_VIEW (icon_view) && GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ())) {
+        GdkMonitor *monitor;
+        GtkWidget *toplevel;
+        GdkRectangle geometry;
+
+        toplevel = gtk_widget_get_toplevel (GTK_WIDGET (icon_view));
+        monitor = g_object_get_data (G_OBJECT (toplevel), "caja-desktop-monitor");
+        if (monitor) {
+            gdk_monitor_get_geometry (monitor, &geometry);
+            position->x -= geometry.x;
+            position->y -= geometry.y;
+        }
+    }
+#endif
+
     /* If it is the desktop directory, maybe the mate-libs metadata has information about it */
 
     /* Disable scaling if not on the desktop */
@@ -551,6 +571,42 @@ should_show_file_on_screen (FMDirectoryView *view, CajaFile *file)
     {
         return FALSE;
     }
+
+#ifdef HAVE_WAYLAND
+    if (FM_IS_DESKTOP_ICON_VIEW (view) && GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ())) {
+        GdkMonitor *monitor;
+        GtkWidget *toplevel;
+        GdkRectangle geometry;
+        char *position_string;
+        int x, y;
+
+        toplevel = gtk_widget_get_toplevel (GTK_WIDGET (view));
+        monitor = g_object_get_data (G_OBJECT (toplevel), "caja-desktop-monitor");
+
+        if (monitor) {
+            gdk_monitor_get_geometry (monitor, &geometry);
+
+            position_string = caja_file_get_metadata (file, CAJA_METADATA_KEY_ICON_POSITION, NULL);
+            if (position_string) {
+                char c;
+                if (sscanf (position_string, " %d , %d %c", &x, &y, &c) == 2) {
+                    g_free (position_string);
+                    if (x < geometry.x || x >= geometry.x + geometry.width ||
+                        y < geometry.y || y >= geometry.y + geometry.height) {
+                        return FALSE;
+                    }
+                } else {
+                    g_free (position_string);
+                }
+            } else {
+                /* If no position is set, only show on primary monitor */
+                if (!gdk_monitor_is_primary (monitor)) {
+                    return FALSE;
+                }
+            }
+        }
+    }
+#endif
 
     return TRUE;
 }
@@ -2747,9 +2803,27 @@ icon_position_changed_callback (CajaIconContainer *container,
     if (!fm_icon_view_using_auto_layout (icon_view))
     {
         char *position_string;
+        int x = position->x;
+        int y = position->y;
+
+#ifdef HAVE_WAYLAND
+        if (FM_IS_DESKTOP_ICON_VIEW (icon_view) && GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ())) {
+            GdkMonitor *monitor;
+            GtkWidget *toplevel;
+            GdkRectangle geometry;
+
+            toplevel = gtk_widget_get_toplevel (GTK_WIDGET (icon_view));
+            monitor = g_object_get_data (G_OBJECT (toplevel), "caja-desktop-monitor");
+            if (monitor) {
+                gdk_monitor_get_geometry (monitor, &geometry);
+                x += geometry.x;
+                y += geometry.y;
+            }
+        }
+#endif
 
         position_string = g_strdup_printf
-                          ("%d,%d", position->x, position->y);
+                          ("%d,%d", x, y);
         caja_file_set_metadata
         (file, CAJA_METADATA_KEY_ICON_POSITION,
          NULL, position_string);

@@ -146,40 +146,6 @@ get_fallback_monitor (GdkDisplay *display)
     return gdk_display_get_monitor (display, 0);
 }
 
-static gboolean
-get_wayland_desktop_geometry (GdkDisplay   *display,
-                              GdkRectangle *geometry)
-{
-    int i, n_monitors;
-    gboolean have_geometry;
-
-    g_return_val_if_fail (geometry != NULL, FALSE);
-
-    n_monitors = gdk_display_get_n_monitors (display);
-    have_geometry = FALSE;
-    *geometry = (GdkRectangle) {0};
-
-    for (i = 0; i < n_monitors; i++) {
-        GdkMonitor *monitor;
-        GdkRectangle monitor_geometry = {0};
-
-        monitor = gdk_display_get_monitor (display, i);
-        if (monitor == NULL) {
-            continue;
-        }
-
-        gdk_monitor_get_geometry (monitor, &monitor_geometry);
-        if (!have_geometry) {
-            *geometry = monitor_geometry;
-            have_geometry = TRUE;
-        } else {
-            gdk_rectangle_union (geometry, &monitor_geometry, geometry);
-        }
-    }
-
-    return have_geometry;
-}
-
 static void
 caja_desktop_window_apply_geometry (CajaDesktopWindow *window)
 {
@@ -198,14 +164,12 @@ caja_desktop_window_apply_geometry (CajaDesktopWindow *window)
         gdk_window_get_geometry (root_window, NULL, NULL,
                                  &width_request, &height_request);
     } else {
-        if (!get_wayland_desktop_geometry (display, &geometry)) {
-            GdkMonitor *monitor = window->details->monitor;
-            if (monitor == NULL) {
-                monitor = get_fallback_monitor (display);
-            }
-            if (monitor != NULL) {
-                gdk_monitor_get_geometry (monitor, &geometry);
-            }
+        GdkMonitor *monitor = window->details->monitor;
+        if (monitor == NULL) {
+            monitor = get_fallback_monitor (display);
+        }
+        if (monitor != NULL) {
+            gdk_monitor_get_geometry (monitor, &geometry);
         }
 
         width_request = MAX (geometry.width, 1);
@@ -397,14 +361,10 @@ caja_desktop_window_new_for_monitor (CajaApplication *application,
     }
     else
     {
-        /* Wayland has no root window; use one desktop over the whole layout. */
         GdkRectangle geometry = {0};
-        target_monitor = monitor;
-        if (!get_wayland_desktop_geometry (display, &geometry)) {
-            target_monitor = monitor ? monitor : get_fallback_monitor (display);
-            if (target_monitor != NULL) {
-                gdk_monitor_get_geometry (target_monitor, &geometry);
-            }
+        target_monitor = monitor ? monitor : get_fallback_monitor (display);
+        if (target_monitor != NULL) {
+            gdk_monitor_get_geometry (target_monitor, &geometry);
         }
         width_request = geometry.width;
         height_request = geometry.height;

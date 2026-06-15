@@ -182,40 +182,6 @@ get_desktop_monitor_for_widget (GtkWidget *widget,
     return gdk_display_get_monitor (display, 0);
 }
 
-static gboolean
-get_wayland_desktop_geometry (GdkDisplay   *display,
-                              GdkRectangle *geometry)
-{
-    int i, n_monitors;
-    gboolean have_geometry;
-
-    g_return_val_if_fail (geometry != NULL, FALSE);
-
-    n_monitors = gdk_display_get_n_monitors (display);
-    have_geometry = FALSE;
-    *geometry = (GdkRectangle) {0};
-
-    for (i = 0; i < n_monitors; i++) {
-        GdkMonitor *monitor;
-        GdkRectangle monitor_geometry = {0};
-
-        monitor = gdk_display_get_monitor (display, i);
-        if (monitor == NULL) {
-            continue;
-        }
-
-        gdk_monitor_get_geometry (monitor, &monitor_geometry);
-        if (!have_geometry) {
-            *geometry = monitor_geometry;
-            have_geometry = TRUE;
-        } else {
-            gdk_rectangle_union (geometry, &monitor_geometry, geometry);
-        }
-    }
-
-    return have_geometry;
-}
-
 static void
 fm_desktop_icon_view_apply_geometry (FMDesktopIconView *desktop_icon_view)
 {
@@ -244,11 +210,10 @@ fm_desktop_icon_view_apply_geometry (FMDesktopIconView *desktop_icon_view)
     else
     {
         GdkRectangle geometry = {0};
-        if (!get_wayland_desktop_geometry (display, &geometry)) {
-            GdkMonitor *monitor;
-            monitor = get_desktop_monitor_for_widget (GTK_WIDGET (desktop_icon_view), display);
-            gdk_monitor_get_geometry (monitor, &geometry);
-        }
+        GdkMonitor *monitor;
+        monitor = get_desktop_monitor_for_widget (GTK_WIDGET (desktop_icon_view), display);
+        gdk_monitor_get_geometry (monitor, &geometry);
+
         allocation.width = MAX (geometry.width, 1);
         allocation.height = MAX (geometry.height, 1);
     }
@@ -370,11 +335,9 @@ icon_container_set_workarea (CajaIconContainer *icon_container,
     {
         scale = 1; /* wayland handles this for us */
         GdkRectangle geometry = {0};
-        if (!get_wayland_desktop_geometry (display, &geometry)) {
-            GdkMonitor *monitor;
-            monitor = get_desktop_monitor_for_widget (GTK_WIDGET (icon_container), display);
-            gdk_monitor_get_geometry (monitor, &geometry);
-        }
+        GdkMonitor *monitor;
+        monitor = get_desktop_monitor_for_widget (GTK_WIDGET (icon_container), display);
+        gdk_monitor_get_geometry (monitor, &geometry);
         screen_width = geometry.width;
         screen_height = geometry.height;
     }

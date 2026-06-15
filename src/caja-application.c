@@ -747,6 +747,7 @@ static void
 caja_application_create_desktop_windows (CajaApplication *application)
 {
     GdkDisplay *display;
+    int i, n_monitors;
 
     g_return_if_fail (caja_application_desktop_windows == NULL);
     g_return_if_fail (CAJA_IS_APPLICATION (application));
@@ -755,12 +756,11 @@ caja_application_create_desktop_windows (CajaApplication *application)
 #ifdef HAVE_WAYLAND
     if (GDK_IS_WAYLAND_DISPLAY (display))
     {
-        /*
-         * Use one desktop window for the whole logical layout.  The window
-         * owns both the wallpaper and the icon container, so icons can move
-         * between monitors without duplicating the Desktop directory.
-         */
-        caja_application_create_desktop_window (application, display, NULL);
+        n_monitors = gdk_display_get_n_monitors (display);
+        for (i = 0; i < n_monitors; i++) {
+            GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+            caja_application_create_desktop_window (application, display, monitor);
+        }
         return;
     }
 #endif
