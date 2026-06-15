@@ -81,6 +81,10 @@ struct _FMDesktopIconViewPrivate
      */
     gulong delayed_init_signal;
     guint reload_desktop_timeout;
+    guint geometry_update_id;
+    gulong monitor_added_id;
+    gulong monitor_removed_id;
+    GList *monitors;
     gboolean pending_rescan;
 };
 
@@ -178,6 +182,169 @@ get_desktop_monitor_for_widget (GtkWidget *widget,
     return gdk_display_get_monitor (display, 0);
 }
 
+static gboolean
+get_wayland_desktop_geometry (GdkDisplay   *display,
+                              GdkRectangle *geometry)
+{
+    int i, n_monitors;
+    gboolean have_geometry;
+
+    g_return_val_if_fail (geometry != NULL, FALSE);
+
+    n_monitors = gdk_display_get_n_monitors (display);
+    have_geometry = FALSE;
+    *geometry = (GdkRectangle) {0};
+
+    for (i = 0; i < n_monitors; i++) {
+        GdkMonitor *monitor;
+        GdkRectangle monitor_geometry = {0};
+
+        monitor = gdk_display_get_monitor (display, i);
+        if (monitor == NULL) {
+            continue;
+        }
+
+        gdk_monitor_get_geometry (monitor, &monitor_geometry);
+        if (!have_geometry) {
+            *geometry = monitor_geometry;
+            have_geometry = TRUE;
+        } else {
+            gdk_rectangle_union (geometry, &monitor_geometry, geometry);
+        }
+    }
+
+    return have_geometry;
+}
+
+static void
+fm_desktop_icon_view_apply_geometry (FMDesktopIconView *desktop_icon_view)
+{
+    CajaIconContainer *icon_container;
+    GtkAllocation allocation;
+    GdkScreen *screen;
+    GdkDisplay *display;
+
+    if (!gtk_widget_get_realized (GTK_WIDGET (desktop_icon_view))) {
+        return;
+    }
+
+    icon_container = get_icon_container (desktop_icon_view);
+    screen = gtk_widget_get_screen (GTK_WIDGET (desktop_icon_view));
+    display = gdk_screen_get_display (screen);
+
+    allocation.x = 0;
+    allocation.y = 0;
+    if (GDK_IS_X11_DISPLAY (display))
+    {
+        gint scale;
+        scale = gtk_widget_get_scale_factor (GTK_WIDGET (desktop_icon_view));
+        allocation.width = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / scale;
+        allocation.height = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / scale;
+    }
+    else
+    {
+        GdkRectangle geometry = {0};
+        if (!get_wayland_desktop_geometry (display, &geometry)) {
+            GdkMonitor *monitor;
+            monitor = get_desktop_monitor_for_widget (GTK_WIDGET (desktop_icon_view), display);
+            gdk_monitor_get_geometry (monitor, &geometry);
+        }
+        allocation.width = MAX (geometry.width, 1);
+        allocation.height = MAX (geometry.height, 1);
+    }
+
+    gtk_widget_set_size_request (GTK_WIDGET (icon_container),
+                                 allocation.width, allocation.height);
+    gtk_widget_size_allocate (GTK_WIDGET (icon_container), &allocation);
+    gtk_widget_queue_resize (GTK_WIDGET (icon_container));
+    gtk_widget_queue_draw (GTK_WIDGET (icon_container));
+    gtk_widget_queue_draw (GTK_WIDGET (desktop_icon_view));
+}
+
+static gboolean
+fm_desktop_icon_view_update_geometry_idle (gpointer data)
+{
+    FMDesktopIconView *desktop_icon_view = FM_DESKTOP_ICON_VIEW (data);
+
+    desktop_icon_view->priv->geometry_update_id = 0;
+    fm_desktop_icon_view_apply_geometry (desktop_icon_view);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void
+fm_desktop_icon_view_queue_geometry_update (FMDesktopIconView *desktop_icon_view)
+{
+    if (desktop_icon_view->priv->geometry_update_id != 0) {
+        return;
+    }
+
+    desktop_icon_view->priv->geometry_update_id =
+        g_idle_add (fm_desktop_icon_view_update_geometry_idle,
+                    desktop_icon_view);
+}
+
+static void
+fm_desktop_icon_view_monitor_changed (GObject    *object,
+                                      GParamSpec *pspec,
+                                      gpointer    user_data)
+{
+    fm_desktop_icon_view_queue_geometry_update (FM_DESKTOP_ICON_VIEW (user_data));
+}
+
+static void
+fm_desktop_icon_view_disconnect_monitor_signals (FMDesktopIconView *desktop_icon_view)
+{
+    GList *l;
+
+    for (l = desktop_icon_view->priv->monitors; l != NULL; l = l->next) {
+        g_signal_handlers_disconnect_by_func (l->data,
+                                              fm_desktop_icon_view_monitor_changed,
+                                              desktop_icon_view);
+        g_object_unref (l->data);
+    }
+
+    g_list_free (desktop_icon_view->priv->monitors);
+    desktop_icon_view->priv->monitors = NULL;
+}
+
+static void
+fm_desktop_icon_view_connect_monitor_signals (FMDesktopIconView *desktop_icon_view)
+{
+    GdkDisplay *display;
+    int i, n_monitors;
+
+    fm_desktop_icon_view_disconnect_monitor_signals (desktop_icon_view);
+
+    display = gtk_widget_get_display (GTK_WIDGET (desktop_icon_view));
+    n_monitors = gdk_display_get_n_monitors (display);
+    for (i = 0; i < n_monitors; i++) {
+        GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+
+        if (monitor == NULL) {
+            continue;
+        }
+
+        desktop_icon_view->priv->monitors =
+            g_list_prepend (desktop_icon_view->priv->monitors,
+                            g_object_ref (monitor));
+        g_signal_connect (monitor, "notify",
+                          G_CALLBACK (fm_desktop_icon_view_monitor_changed),
+                          desktop_icon_view);
+    }
+}
+
+static void
+fm_desktop_icon_view_monitor_list_changed (GdkDisplay *display,
+                                           GdkMonitor *monitor,
+                                           gpointer    user_data)
+{
+    FMDesktopIconView *desktop_icon_view = FM_DESKTOP_ICON_VIEW (user_data);
+
+    fm_desktop_icon_view_connect_monitor_signals (desktop_icon_view);
+    fm_desktop_icon_view_queue_geometry_update (desktop_icon_view);
+}
+
 static void
 icon_container_set_workarea (CajaIconContainer *icon_container,
                              GdkScreen             *screen,
@@ -201,11 +368,13 @@ icon_container_set_workarea (CajaIconContainer *icon_container,
     }
     else
     {
-        scale = 1; /*wayland handles this for us*/
+        scale = 1; /* wayland handles this for us */
         GdkRectangle geometry = {0};
-        GdkMonitor *monitor;
-        monitor = get_desktop_monitor_for_widget (GTK_WIDGET (icon_container), display);
-        gdk_monitor_get_geometry (monitor, &geometry);
+        if (!get_wayland_desktop_geometry (display, &geometry)) {
+            GdkMonitor *monitor;
+            monitor = get_desktop_monitor_for_widget (GTK_WIDGET (icon_container), display);
+            gdk_monitor_get_geometry (monitor, &geometry);
+        }
         screen_width = geometry.width;
         screen_height = geometry.height;
     }
@@ -359,6 +528,24 @@ fm_desktop_icon_view_dispose (GObject *object)
         g_source_remove (icon_view->priv->reload_desktop_timeout);
         icon_view->priv->reload_desktop_timeout = 0;
     }
+    if (icon_view->priv->geometry_update_id != 0)
+    {
+        g_source_remove (icon_view->priv->geometry_update_id);
+        icon_view->priv->geometry_update_id = 0;
+    }
+    if (icon_view->priv->monitor_added_id != 0)
+    {
+        g_signal_handler_disconnect (gtk_widget_get_display (GTK_WIDGET (icon_view)),
+                                     icon_view->priv->monitor_added_id);
+        icon_view->priv->monitor_added_id = 0;
+    }
+    if (icon_view->priv->monitor_removed_id != 0)
+    {
+        g_signal_handler_disconnect (gtk_widget_get_display (GTK_WIDGET (icon_view)),
+                                     icon_view->priv->monitor_removed_id);
+        icon_view->priv->monitor_removed_id = 0;
+    }
+    fm_desktop_icon_view_disconnect_monitor_signals (icon_view);
 
     ui_manager = fm_directory_view_get_ui_manager (FM_DIRECTORY_VIEW (icon_view));
     if (ui_manager != NULL)
@@ -476,7 +663,6 @@ realized_callback (GtkWidget *widget, FMDesktopIconView *desktop_icon_view)
     GdkWindow *root_window;
     GdkScreen *screen;
     GdkDisplay *display;
-    GtkAllocation allocation;
 
     g_return_if_fail (desktop_icon_view->priv->root_window == NULL);
 
@@ -489,28 +675,7 @@ realized_callback (GtkWidget *widget, FMDesktopIconView *desktop_icon_view)
      * layout was done at 60x60 stacking all desktop icons in
      * the top left corner.
      */
-    allocation.x = 0;
-    allocation.y = 0;
-    if (GDK_IS_X11_DISPLAY (display))
-    {
-           gint scale;
-           scale = gtk_widget_get_scale_factor (widget);
-           allocation.width = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / scale;
-           allocation.height = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / scale;
-    }
-    else
-    {
-        /*No real root window or primary monitor in wayland unless compositors add it back*/
-        GdkRectangle geometry = {0};
-        GdkMonitor *monitor;
-        monitor = get_desktop_monitor_for_widget (widget, display);
-        gdk_monitor_get_geometry (monitor, &geometry);
-        allocation.width = geometry.width;
-        allocation.height = geometry.height;
-    }
-
-    gtk_widget_size_allocate (GTK_WIDGET(get_icon_container(desktop_icon_view)),
-                              &allocation);
+    fm_desktop_icon_view_apply_geometry (desktop_icon_view);
 
     if (GDK_IS_X11_DISPLAY (display))
     {
@@ -530,6 +695,19 @@ realized_callback (GtkWidget *widget, FMDesktopIconView *desktop_icon_view)
     else
     {
         desktop_icon_view->priv->root_window = NULL;
+        if (desktop_icon_view->priv->monitor_added_id == 0) {
+            desktop_icon_view->priv->monitor_added_id =
+                g_signal_connect (display, "monitor-added",
+                                  G_CALLBACK (fm_desktop_icon_view_monitor_list_changed),
+                                  desktop_icon_view);
+        }
+        if (desktop_icon_view->priv->monitor_removed_id == 0) {
+            desktop_icon_view->priv->monitor_removed_id =
+                g_signal_connect (display, "monitor-removed",
+                                  G_CALLBACK (fm_desktop_icon_view_monitor_list_changed),
+                                  desktop_icon_view);
+        }
+        fm_desktop_icon_view_connect_monitor_signals (desktop_icon_view);
     }
 }
 

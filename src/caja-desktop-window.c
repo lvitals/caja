@@ -83,6 +83,10 @@ caja_desktop_window_accessible_class_init (CajaDesktopWindowAccessibleClass *kla
 struct _CajaDesktopWindowPrivate
 {
     gulong size_changed_id;
+    gulong monitor_added_id;
+    gulong monitor_removed_id;
+    guint geometry_update_id;
+    GList *monitors;
 
     gboolean loaded;
     GdkMonitor *monitor;
@@ -140,6 +144,161 @@ get_fallback_monitor (GdkDisplay *display)
 
     /* Last resort */
     return gdk_display_get_monitor (display, 0);
+}
+
+static gboolean
+get_wayland_desktop_geometry (GdkDisplay   *display,
+                              GdkRectangle *geometry)
+{
+    int i, n_monitors;
+    gboolean have_geometry;
+
+    g_return_val_if_fail (geometry != NULL, FALSE);
+
+    n_monitors = gdk_display_get_n_monitors (display);
+    have_geometry = FALSE;
+    *geometry = (GdkRectangle) {0};
+
+    for (i = 0; i < n_monitors; i++) {
+        GdkMonitor *monitor;
+        GdkRectangle monitor_geometry = {0};
+
+        monitor = gdk_display_get_monitor (display, i);
+        if (monitor == NULL) {
+            continue;
+        }
+
+        gdk_monitor_get_geometry (monitor, &monitor_geometry);
+        if (!have_geometry) {
+            *geometry = monitor_geometry;
+            have_geometry = TRUE;
+        } else {
+            gdk_rectangle_union (geometry, &monitor_geometry, geometry);
+        }
+    }
+
+    return have_geometry;
+}
+
+static void
+caja_desktop_window_apply_geometry (CajaDesktopWindow *window)
+{
+    GdkDisplay *display;
+    GdkRectangle geometry = {0};
+    int width_request;
+    int height_request;
+
+    display = gtk_widget_get_display (GTK_WIDGET (window));
+    if (GDK_IS_X11_DISPLAY (display)) {
+        GdkWindow *root_window;
+        GdkScreen *screen;
+
+        screen = gtk_window_get_screen (GTK_WINDOW (window));
+        root_window = gdk_screen_get_root_window (screen);
+        gdk_window_get_geometry (root_window, NULL, NULL,
+                                 &width_request, &height_request);
+    } else {
+        if (!get_wayland_desktop_geometry (display, &geometry)) {
+            GdkMonitor *monitor = window->details->monitor;
+            if (monitor == NULL) {
+                monitor = get_fallback_monitor (display);
+            }
+            if (monitor != NULL) {
+                gdk_monitor_get_geometry (monitor, &geometry);
+            }
+        }
+
+        width_request = MAX (geometry.width, 1);
+        height_request = MAX (geometry.height, 1);
+    }
+
+    gtk_widget_set_size_request (GTK_WIDGET (window),
+                                 width_request, height_request);
+    gtk_window_resize (GTK_WINDOW (window), width_request, height_request);
+    gtk_widget_queue_resize (GTK_WIDGET (window));
+    gtk_widget_queue_draw (GTK_WIDGET (window));
+}
+
+static gboolean
+caja_desktop_window_update_geometry_idle (gpointer data)
+{
+    CajaDesktopWindow *window = CAJA_DESKTOP_WINDOW (data);
+
+    window->details->geometry_update_id = 0;
+    caja_desktop_window_apply_geometry (window);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void
+caja_desktop_window_queue_geometry_update (CajaDesktopWindow *window)
+{
+    if (window->details->geometry_update_id != 0) {
+        return;
+    }
+
+    window->details->geometry_update_id =
+        g_idle_add (caja_desktop_window_update_geometry_idle, window);
+}
+
+static void
+caja_desktop_window_monitor_changed (GObject    *object,
+                                     GParamSpec *pspec,
+                                     gpointer    user_data)
+{
+    caja_desktop_window_queue_geometry_update (CAJA_DESKTOP_WINDOW (user_data));
+}
+
+static void
+caja_desktop_window_disconnect_monitor_signals (CajaDesktopWindow *window)
+{
+    GList *l;
+
+    for (l = window->details->monitors; l != NULL; l = l->next) {
+        g_signal_handlers_disconnect_by_func (l->data,
+                                              caja_desktop_window_monitor_changed,
+                                              window);
+        g_object_unref (l->data);
+    }
+
+    g_list_free (window->details->monitors);
+    window->details->monitors = NULL;
+}
+
+static void
+caja_desktop_window_connect_monitor_signals (CajaDesktopWindow *window)
+{
+    GdkDisplay *display;
+    int i, n_monitors;
+
+    caja_desktop_window_disconnect_monitor_signals (window);
+
+    display = gtk_widget_get_display (GTK_WIDGET (window));
+    n_monitors = gdk_display_get_n_monitors (display);
+    for (i = 0; i < n_monitors; i++) {
+        GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+
+        if (monitor == NULL) {
+            continue;
+        }
+
+        window->details->monitors =
+            g_list_prepend (window->details->monitors, g_object_ref (monitor));
+        g_signal_connect (monitor, "notify",
+                          G_CALLBACK (caja_desktop_window_monitor_changed),
+                          window);
+    }
+}
+
+static void
+caja_desktop_window_monitor_list_changed (GdkDisplay *display,
+                                          GdkMonitor *monitor,
+                                          gpointer    user_data)
+{
+    CajaDesktopWindow *window = CAJA_DESKTOP_WINDOW (user_data);
+
+    caja_desktop_window_connect_monitor_signals (window);
+    caja_desktop_window_queue_geometry_update (window);
 }
 
 static void
@@ -209,32 +368,7 @@ static void
 caja_desktop_window_screen_size_changed (GdkScreen             *screen,
         CajaDesktopWindow *window)
 {
-    int width_request, height_request;
-
-    GdkDisplay *display = gdk_screen_get_display (screen);
-    if (GDK_IS_X11_DISPLAY (display))
-    {
-        GdkWindow *root_window;
-        root_window = gdk_screen_get_root_window (screen);
-        gdk_window_get_geometry (root_window, NULL, NULL, &width_request, &height_request);
-    }
-    else
-    {
-        /*No root window or primary monitor in wayland unless compositors add it back*/
-        GdkRectangle geometry = {0};
-        GdkMonitor *monitor = window->details->monitor;
-        if (monitor == NULL) {
-            monitor = get_fallback_monitor (display);
-        }
-        gdk_monitor_get_geometry (monitor, &geometry);
-        width_request = geometry.width;
-        height_request = geometry.height;
-    }
-
-    g_object_set (window,
-                  "width_request", width_request,
-                  "height_request", height_request,
-                  NULL);
+    caja_desktop_window_queue_geometry_update (window);
 }
 
 CajaDesktopWindow *
@@ -263,14 +397,15 @@ caja_desktop_window_new_for_monitor (CajaApplication *application,
     }
     else
     {
-        /*FIXME: There is no primary monitor in wayland itself
-        *compositors can implement this but as this is written
-        *only a few wayland compositors allow setting a primary monitor
-        *and they all do it differently. For now, use the first monitor
-        */
+        /* Wayland has no root window; use one desktop over the whole layout. */
         GdkRectangle geometry = {0};
-        target_monitor = monitor ? monitor : get_fallback_monitor (display);
-        gdk_monitor_get_geometry (target_monitor, &geometry);
+        target_monitor = monitor;
+        if (!get_wayland_desktop_geometry (display, &geometry)) {
+            target_monitor = monitor ? monitor : get_fallback_monitor (display);
+            if (target_monitor != NULL) {
+                gdk_monitor_get_geometry (target_monitor, &geometry);
+            }
+        }
         width_request = geometry.width;
         height_request = geometry.height;
     }
@@ -391,6 +526,19 @@ unrealize (GtkWidget *widget)
                          details->size_changed_id);
         details->size_changed_id = 0;
     }
+    if (details->monitor_added_id != 0) {
+        g_signal_handler_disconnect (display, details->monitor_added_id);
+        details->monitor_added_id = 0;
+    }
+    if (details->monitor_removed_id != 0) {
+        g_signal_handler_disconnect (display, details->monitor_removed_id);
+        details->monitor_removed_id = 0;
+    }
+    if (details->geometry_update_id != 0) {
+        g_source_remove (details->geometry_update_id);
+        details->geometry_update_id = 0;
+    }
+    caja_desktop_window_disconnect_monitor_signals (window);
 
     GTK_WIDGET_CLASS (caja_desktop_window_parent_class)->unrealize (widget);
 }
@@ -458,6 +606,18 @@ realize (GtkWidget *widget)
     details->size_changed_id =
         g_signal_connect (gtk_window_get_screen (GTK_WINDOW (window)), "size_changed",
                           G_CALLBACK (caja_desktop_window_screen_size_changed), window);
+
+    if (GDK_IS_WAYLAND_DISPLAY (display)) {
+        details->monitor_added_id =
+            g_signal_connect (display, "monitor-added",
+                              G_CALLBACK (caja_desktop_window_monitor_list_changed),
+                              window);
+        details->monitor_removed_id =
+            g_signal_connect (display, "monitor-removed",
+                              G_CALLBACK (caja_desktop_window_monitor_list_changed),
+                              window);
+        caja_desktop_window_connect_monitor_signals (window);
+    }
 }
 
 /* Should only reached in x11*/
