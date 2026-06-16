@@ -564,6 +564,59 @@ fm_icon_view_clear (FMDirectoryView *view)
     g_slist_free (file_list);
 }
 
+#ifdef HAVE_WAYLAND
+static GdkMonitor *
+get_primary_monitor_with_fallback (GdkDisplay *display)
+{
+    GdkMonitor *monitor;
+    int i, n_monitors;
+
+    monitor = gdk_display_get_primary_monitor (display);
+    if (monitor != NULL) {
+        return monitor;
+    }
+
+    n_monitors = gdk_display_get_n_monitors (display);
+    for (i = 0; i < n_monitors; i++) {
+        GdkRectangle geometry = {0};
+
+        monitor = gdk_display_get_monitor (display, i);
+        gdk_monitor_get_geometry (monitor, &geometry);
+        if (geometry.x == 0 && geometry.y == 0) {
+            return monitor;
+        }
+    }
+
+    if (n_monitors > 0) {
+        return gdk_display_get_monitor (display, 0);
+    }
+
+    return NULL;
+}
+
+static gboolean
+is_position_on_any_monitor (GdkDisplay *display, int x, int y)
+{
+    int i, n_monitors;
+    const int tolerance = 8;
+
+    n_monitors = gdk_display_get_n_monitors (display);
+    for (i = 0; i < n_monitors; i++) {
+        GdkRectangle area;
+        GdkMonitor *monitor = gdk_display_get_monitor (display, i);
+
+        gdk_monitor_get_workarea (monitor, &area);
+
+        if (x >= area.x - tolerance && x < area.x + area.width + tolerance &&
+            y >= area.y - tolerance && y < area.y + area.height + tolerance) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+#endif
+
 static gboolean
 should_show_file_on_screen (FMDirectoryView *view, CajaFile *file)
 {
@@ -576,7 +629,7 @@ should_show_file_on_screen (FMDirectoryView *view, CajaFile *file)
     if (FM_IS_DESKTOP_ICON_VIEW (view) && GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ())) {
         GdkMonitor *monitor;
         GtkWidget *toplevel;
-        GdkRectangle geometry;
+        GdkRectangle workarea;
         char *position_string;
         int x, y;
 
@@ -584,26 +637,37 @@ should_show_file_on_screen (FMDirectoryView *view, CajaFile *file)
         monitor = g_object_get_data (G_OBJECT (toplevel), "caja-desktop-monitor");
 
         if (monitor) {
-            gdk_monitor_get_geometry (monitor, &geometry);
+            GdkDisplay *display = gtk_widget_get_display (GTK_WIDGET (view));
+            GdkMonitor *primary = get_primary_monitor_with_fallback (display);
+
+            gdk_monitor_get_workarea (monitor, &workarea);
 
             position_string = caja_file_get_metadata (file, CAJA_METADATA_KEY_ICON_POSITION, NULL);
             if (position_string) {
                 char c;
                 if (sscanf (position_string, " %d , %d %c", &x, &y, &c) == 2) {
                     g_free (position_string);
-                    if (x < geometry.x || x >= geometry.x + geometry.width ||
-                        y < geometry.y || y >= geometry.y + geometry.height) {
+
+                    /* If the position is on the current monitor, show it. */
+                    if (x >= workarea.x && x < workarea.x + workarea.width &&
+                        y >= workarea.y && y < workarea.y + workarea.height) {
+                        return TRUE;
+                    }
+
+                    /* If it's on ANOTHER monitor, don't show it here. */
+                    if (is_position_on_any_monitor (display, x, y)) {
                         return FALSE;
                     }
+
+                    /* If it's not on any monitor (lost), show it on the primary monitor. */
+                    return (monitor == primary);
                 } else {
                     g_free (position_string);
                 }
-            } else {
-                /* If no position is set, only show on primary monitor */
-                if (!gdk_monitor_is_primary (monitor)) {
-                    return FALSE;
-                }
             }
+
+            /* If no position is set, only show on primary monitor */
+            return (monitor == primary);
         }
     }
 #endif
