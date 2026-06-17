@@ -255,17 +255,6 @@ caja_desktop_window_connect_monitor_signals (CajaDesktopWindow *window)
 }
 
 static void
-caja_desktop_window_monitor_list_changed (GdkDisplay *display,
-                                          GdkMonitor *monitor,
-                                          gpointer    user_data)
-{
-    CajaDesktopWindow *window = CAJA_DESKTOP_WINDOW (user_data);
-
-    caja_desktop_window_connect_monitor_signals (window);
-    caja_desktop_window_queue_geometry_update (window);
-}
-
-static void
 caja_desktop_window_init (CajaDesktopWindow *window)
 {
     GtkAction *action;
@@ -421,27 +410,29 @@ caja_desktop_window_new_for_monitor (CajaApplication *application,
         gtk_layer_set_keyboard_mode (gtkwin, GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
     }
 #endif
-    /* Special sawmill setting*/
-    GdkWindow *gdkwin;
-    if ((GDK_IS_X11_DISPLAY (display)))
-        gtk_widget_realize (GTK_WIDGET (window));
-    else
-        gtk_widget_show (GTK_WIDGET (window));
-
-    gdkwin = gtk_widget_get_window (GTK_WIDGET (window));
-    if ((GDK_IS_X11_DISPLAY (display)) && (gdk_window_ensure_native (gdkwin)))
-    {
-        Display *disp = GDK_DISPLAY_XDISPLAY (gdk_window_get_display (gdkwin));
-        XClassHint *xch = XAllocClassHint ();
-        xch->res_name = "desktop_window";
-        xch->res_class = "Caja";
-        XSetClassHint (disp, GDK_WINDOW_XID(gdkwin), xch);
-        XFree(xch);
-    }
-
-    gdk_window_set_title (gdkwin, _("Desktop"));
-
+    /* Connect signals before realize/show */
     g_signal_connect (window, "delete_event", G_CALLBACK (caja_desktop_window_delete_event), NULL);
+
+    GdkWindow *gdkwin;
+    if (GDK_IS_X11_DISPLAY (display)) {
+        gtk_widget_realize (GTK_WIDGET (window));
+        gdkwin = gtk_widget_get_window (GTK_WIDGET (window));
+        if (gdkwin != NULL) {
+            if (gdk_window_ensure_native (gdkwin)) {
+                Display *disp = GDK_DISPLAY_XDISPLAY (gdk_window_get_display (gdkwin));
+                XClassHint *xch = XAllocClassHint ();
+                xch->res_name = "desktop_window";
+                xch->res_class = "Caja";
+                XSetClassHint (disp, GDK_WINDOW_XID (gdkwin), xch);
+                XFree (xch);
+            }
+            gdk_window_set_title (gdkwin, _("Desktop"));
+        }
+    } else {
+        /* Wayland: explicit realize to trigger the realize signal
+         * and connect mate-bg before mapping the window */
+        gtk_widget_realize (GTK_WIDGET (window));
+    }
 
     /* Point window at the desktop folder.
      * Note that caja_desktop_window_init is too early to do this.
@@ -568,14 +559,6 @@ realize (GtkWidget *widget)
                           G_CALLBACK (caja_desktop_window_screen_size_changed), window);
 
     if (GDK_IS_WAYLAND_DISPLAY (display)) {
-        details->monitor_added_id =
-            g_signal_connect (display, "monitor-added",
-                              G_CALLBACK (caja_desktop_window_monitor_list_changed),
-                              window);
-        details->monitor_removed_id =
-            g_signal_connect (display, "monitor-removed",
-                              G_CALLBACK (caja_desktop_window_monitor_list_changed),
-                              window);
         caja_desktop_window_connect_monitor_signals (window);
     }
 }

@@ -2699,51 +2699,61 @@ fm_icon_view_filter_by_screen (FMIconView *icon_view,
     icon_view->details->filter_by_screen = filter;
 }
 
+void
+fm_icon_view_reload_icons (FMIconView *icon_view)
+{
+    FMDirectoryView *view = FM_DIRECTORY_VIEW (icon_view);
+    GList *files, *l;
+    CajaDirectory *directory;
+    CajaIconContainer *icon_container;
+
+    if (!icon_view->details->filter_by_screen)
+    {
+        return;
+    }
+
+    icon_container = get_icon_container (icon_view);
+    directory = fm_directory_view_get_model (view);
+
+    if (directory == NULL)
+    {
+        return;
+    }
+
+    files = caja_directory_get_file_list (directory);
+
+    for (l = files; l != NULL; l = l->next)
+    {
+        CajaFile *file = l->data;
+
+        if (!should_show_file_on_screen (view, file))
+        {
+            fm_icon_view_remove_file (view, file, directory);
+        }
+        else
+        {
+            if (caja_icon_container_add (icon_container,
+                                         CAJA_ICON_CONTAINER_ICON_DATA (file)))
+            {
+                caja_file_ref (file);
+            }
+        }
+    }
+
+    caja_file_list_unref (files);
+    g_list_free (files);
+}
+
 static void
 fm_icon_view_screen_changed (GtkWidget *widget,
                              GdkScreen *previous_screen)
 {
-    FMDirectoryView *view;
-    GList *files, *l;
-
     if (GTK_WIDGET_CLASS (fm_icon_view_parent_class)->screen_changed)
     {
         GTK_WIDGET_CLASS (fm_icon_view_parent_class)->screen_changed (widget, previous_screen);
     }
 
-    view = FM_DIRECTORY_VIEW (widget);
-    if (FM_ICON_VIEW (view)->details->filter_by_screen)
-    {
-        CajaDirectory *directory;
-        CajaIconContainer *icon_container;
-        CajaFile *file = NULL;
-
-        icon_container = get_icon_container (FM_ICON_VIEW (view));
-
-        directory = fm_directory_view_get_model (view);
-        files = caja_directory_get_file_list (directory);
-
-        for (l = files; l != NULL; l = l->next)
-        {
-            file = l->data;
-
-            if (!should_show_file_on_screen (view, file))
-            {
-                fm_icon_view_remove_file (view, file, directory);
-            }
-            else
-            {
-                if (caja_icon_container_add (icon_container,
-                                             CAJA_ICON_CONTAINER_ICON_DATA (file)))
-                {
-                    caja_file_ref (file);
-                }
-            }
-        }
-
-        caja_file_list_unref (files);
-        g_list_free (files);
-    }
+    fm_icon_view_reload_icons (FM_ICON_VIEW (widget));
 }
 
 static gboolean

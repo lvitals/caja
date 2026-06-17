@@ -116,6 +116,9 @@ static CajaFreedesktopDBus *fdb_manager = NULL;
 
 static char *   caja_application_get_session_data (CajaApplication *self);
 void caja_application_quit (CajaApplication *self);
+static CajaDesktopWindow *caja_application_create_desktop_window (CajaApplication *application,
+                                                                  GdkDisplay      *display,
+                                                                  GdkMonitor      *monitor);
 
 struct _CajaApplicationPrivate {
 	GVolumeMonitor *volume_monitor;
@@ -123,6 +126,10 @@ struct _CajaApplicationPrivate {
     gboolean force_desktop;
     gboolean autostart;
     gchar *geometry;
+#ifdef HAVE_WAYLAND
+    gulong monitor_added_id;
+    gulong monitor_removed_id;
+#endif
 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (CajaApplication, caja_application, GTK_TYPE_APPLICATION);
@@ -706,7 +713,136 @@ selection_clear_event_cb (GtkWidget	        *widget,
     return TRUE;
 }
 
+#ifdef HAVE_WAYLAND
+typedef struct {
+    CajaApplication   *application;
+    CajaDesktopWindow *new_window;   /* window newly created for the monitor */
+    GdkMonitor        *monitor;      /* temporarily stored monitor for delayed creation */
+    guint              attempts;     /* safety against infinite loop */
+} MonitorAddedData;
+
 static gboolean
+monitor_added_reload_cb (gpointer user_data)
+{
+    MonitorAddedData *data = user_data;
+    CajaWindowSlot *slot;
+    CajaDirectory *dir;
+
+    data->attempts++;
+
+    /* Limit to ~5 seconds (50 × 100ms) */
+    if (data->attempts > 50) {
+        g_warning ("caja: monitor_added_reload_cb: giving up after 50 attempts");
+        g_free (data);
+        return G_SOURCE_REMOVE;
+    }
+
+    /* Check if the window still exists in the list */
+    if (!g_list_find (caja_application_desktop_windows, data->new_window)) {
+        g_free (data);
+        return G_SOURCE_REMOVE;
+    }
+
+    slot = caja_window_get_active_slot (CAJA_WINDOW (data->new_window));
+    if (!slot || !slot->content_view || !FM_IS_ICON_VIEW (slot->content_view))
+        return G_SOURCE_CONTINUE; /* wait for the view to be created */
+
+    dir = fm_directory_view_get_model (FM_DIRECTORY_VIEW (slot->content_view));
+    if (dir == NULL)
+        return G_SOURCE_CONTINUE; /* wait for the directory to be loaded */
+
+    /* Now it is safe to reload — reload ALL windows to redistribute
+     * "lost" icons that may have migrated to the primary monitor */
+    GList *l;
+    for (l = caja_application_desktop_windows; l != NULL; l = l->next) {
+        CajaDesktopWindow *win = CAJA_DESKTOP_WINDOW (l->data);
+        CajaWindowSlot *s = caja_window_get_active_slot (CAJA_WINDOW (win));
+        if (s && s->content_view && FM_IS_ICON_VIEW (s->content_view)) {
+            fm_icon_view_reload_icons (FM_ICON_VIEW (s->content_view));
+        }
+    }
+
+    g_free (data);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean
+refresh_all_desktop_icons_idle_cb (gpointer data)
+{
+    GList *l;
+    for (l = caja_application_desktop_windows; l != NULL; l = l->next) {
+        CajaDesktopWindow *window = CAJA_DESKTOP_WINDOW (l->data);
+        CajaWindowSlot *slot = caja_window_get_active_slot (CAJA_WINDOW (window));
+        if (slot && slot->content_view && FM_IS_ICON_VIEW (slot->content_view)) {
+            fm_icon_view_reload_icons (FM_ICON_VIEW (slot->content_view));
+        }
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static void
+desktop_window_destroyed_cb (GtkWidget *widget, CajaApplication *application)
+{
+    caja_application_desktop_windows = g_list_remove (caja_application_desktop_windows, widget);
+}
+
+static void
+display_monitor_added_delayed_cb (gpointer user_data)
+{
+    MonitorAddedData *data = user_data;
+    CajaDesktopWindow *window;
+
+    window = caja_application_create_desktop_window (data->application,
+                                                     gdk_display_get_default (),
+                                                     data->monitor);
+    if (window != NULL) {
+        data->new_window = window;
+        data->attempts = 0;
+        /* Now track the window for icon reloading */
+        g_timeout_add (100, monitor_added_reload_cb, data);
+    } else {
+        g_free (data);
+    }
+}
+
+static void
+display_monitor_added_cb (GdkDisplay *display,
+                          GdkMonitor *monitor,
+                          CajaApplication *application)
+{
+    MonitorAddedData *data;
+
+    data = g_new0 (MonitorAddedData, 1);
+    data->application = application;
+    data->monitor = monitor; /* temporarily store it here */
+
+    /* Wait 500ms for the monitor environment to stabilize before creating window */
+    g_timeout_add (500, (GSourceFunc)display_monitor_added_delayed_cb, data);
+}
+
+static void
+display_monitor_removed_cb (GdkDisplay *display,
+                            GdkMonitor *monitor,
+                            CajaApplication *application)
+{
+    GList *l, *next;
+    for (l = caja_application_desktop_windows; l != NULL; l = next) {
+        CajaDesktopWindow *window = CAJA_DESKTOP_WINDOW (l->data);
+        next = l->next;
+        if (g_object_get_data (G_OBJECT (window), "caja-desktop-monitor") == monitor) {
+            gtk_widget_destroy (GTK_WIDGET (window));
+            break;
+        }
+    }
+
+    /* Use timeout instead of idle to ensure the destroy
+     * was processed and the geometry of remaining monitors
+     * was updated by the compositor before reloading */
+    g_timeout_add (200, refresh_all_desktop_icons_idle_cb, NULL);
+}
+#endif
+
+static CajaDesktopWindow *
 caja_application_create_desktop_window (CajaApplication *application,
                                         GdkDisplay      *display,
                                         GdkMonitor      *monitor)
@@ -714,9 +850,19 @@ caja_application_create_desktop_window (CajaApplication *application,
     GtkWidget *selection_widget;
     CajaDesktopWindow *window;
 
+    /* On Wayland, we must have a monitor. On X11, monitor is NULL. */
+    if (GDK_IS_WAYLAND_DISPLAY (display) && !monitor) {
+        return NULL;
+    }
+
     selection_widget = get_desktop_manager_selection (display);
     if (selection_widget == NULL) {
-        return FALSE;
+        return NULL;
+    }
+
+    /* Hide selection_widget before creating/showing the window on Wayland */
+    if (GDK_IS_WAYLAND_DISPLAY (display)) {
+        gtk_widget_hide (selection_widget);
     }
 
     window = caja_desktop_window_new_for_monitor (application,
@@ -729,10 +875,13 @@ caja_application_create_desktop_window (CajaApplication *application,
     g_signal_connect (window, "unrealize",
                       G_CALLBACK (desktop_unrealize_cb), selection_widget);
 
-    /* We realize it immediately so that the CAJA_DESKTOP_WINDOW_ID
-       property is set so mate-settings-daemon doesn't try to set the
-       background. And we do a gdk_display_flush() to be sure X gets it. */
-    gtk_widget_realize (GTK_WIDGET (window));
+#ifdef HAVE_WAYLAND
+    if (GDK_IS_WAYLAND_DISPLAY (display)) {
+        g_signal_connect (window, "destroy",
+                          G_CALLBACK (desktop_window_destroyed_cb), application);
+    }
+#endif
+
     gdk_display_flush (display);
 
     caja_application_desktop_windows =
@@ -740,7 +889,10 @@ caja_application_create_desktop_window (CajaApplication *application,
     gtk_application_add_window (GTK_APPLICATION (application),
                                 GTK_WINDOW (window));
 
-    return TRUE;
+    /* Show the window after adding it to the application to ensure proper tracking */
+    gtk_widget_show (GTK_WIDGET (window));
+
+    return window;
 }
 
 static void
@@ -756,6 +908,17 @@ caja_application_create_desktop_windows (CajaApplication *application)
 #ifdef HAVE_WAYLAND
     if (GDK_IS_WAYLAND_DISPLAY (display))
     {
+        if (application->priv->monitor_added_id == 0) {
+            application->priv->monitor_added_id =
+                g_signal_connect (display, "monitor-added",
+                                  G_CALLBACK (display_monitor_added_cb), application);
+        }
+        if (application->priv->monitor_removed_id == 0) {
+            application->priv->monitor_removed_id =
+                g_signal_connect (display, "monitor-removed",
+                                  G_CALLBACK (display_monitor_removed_cb), application);
+        }
+
         n_monitors = gdk_display_get_n_monitors (display);
         for (i = 0; i < n_monitors; i++) {
             GdkMonitor *monitor = gdk_display_get_monitor (display, i);
@@ -777,12 +940,28 @@ caja_application_open_desktop (CajaApplication *application)
     }
 }
 static void
-caja_application_close_desktop (void)
+caja_application_close_desktop (CajaApplication *application)
 {
+#ifdef HAVE_WAYLAND
+    GdkDisplay *display = gdk_display_get_default ();
+
+    if (GDK_IS_WAYLAND_DISPLAY (display)) {
+        if (application->priv->monitor_added_id != 0) {
+            g_signal_handler_disconnect (display, application->priv->monitor_added_id);
+            application->priv->monitor_added_id = 0;
+        }
+        if (application->priv->monitor_removed_id != 0) {
+            g_signal_handler_disconnect (display, application->priv->monitor_removed_id);
+            application->priv->monitor_removed_id = 0;
+        }
+    }
+#endif
+
     if (caja_application_desktop_windows != NULL)
     {
-        g_list_free_full (caja_application_desktop_windows, (GDestroyNotify) gtk_widget_destroy);
+        GList *l = caja_application_desktop_windows;
         caja_application_desktop_windows = NULL;
+        g_list_free_full (l, (GDestroyNotify) gtk_widget_destroy);
     }
 }
 
@@ -1123,7 +1302,7 @@ desktop_changed_callback (gpointer user_data)
     }
     else
     {
-        caja_application_close_desktop ();
+        caja_application_close_desktop (application);
     }
 }
 

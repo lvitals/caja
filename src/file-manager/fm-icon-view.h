@@ -127,6 +127,7 @@ int     fm_icon_view_compare_files (FMIconView   *icon_view,
                                     CajaFile *a,
                                     CajaFile *b);
 void    fm_icon_view_filter_by_screen (FMIconView *icon_view, gboolean filter);
+void    fm_icon_view_reload_icons (FMIconView *icon_view);
 gboolean fm_icon_view_is_compact   (FMIconView *icon_view);
 
 void    fm_icon_view_register       (void);

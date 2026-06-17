@@ -307,7 +307,8 @@ fm_desktop_icon_view_monitor_list_changed (GdkDisplay *display,
     FMDesktopIconView *desktop_icon_view = FM_DESKTOP_ICON_VIEW (user_data);
 
     fm_desktop_icon_view_connect_monitor_signals (desktop_icon_view);
-    fm_desktop_icon_view_queue_geometry_update (desktop_icon_view);
+    fm_desktop_icon_view_apply_geometry (desktop_icon_view);
+    fm_icon_view_reload_icons (FM_ICON_VIEW (desktop_icon_view));
 }
 
 static void
