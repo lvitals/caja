@@ -669,6 +669,9 @@ get_desktop_manager_selection (GdkDisplay *display)
     /* We need this for gdk_x11_get_server_time() */
     gtk_widget_add_events (selection_widget, GDK_PROPERTY_CHANGE_MASK);
 
+    /* Ensure it is never shown by show_all on parents */
+    gtk_widget_set_no_show_all (selection_widget, TRUE);
+
     if (GDK_IS_X11_DISPLAY (display))
     {
         if (gtk_selection_owner_set_for_display (display,
@@ -786,7 +789,7 @@ desktop_window_destroyed_cb (GtkWidget *widget, CajaApplication *application)
     caja_application_desktop_windows = g_list_remove (caja_application_desktop_windows, widget);
 }
 
-static void
+static gboolean
 display_monitor_added_delayed_cb (gpointer user_data)
 {
     MonitorAddedData *data = user_data;
@@ -803,6 +806,8 @@ display_monitor_added_delayed_cb (gpointer user_data)
     } else {
         g_free (data);
     }
+
+    return G_SOURCE_REMOVE;
 }
 
 static void
@@ -817,7 +822,7 @@ display_monitor_added_cb (GdkDisplay *display,
     data->monitor = monitor; /* temporarily store it here */
 
     /* Wait 500ms for the monitor environment to stabilize before creating window */
-    g_timeout_add (500, (GSourceFunc)display_monitor_added_delayed_cb, data);
+    g_timeout_add (500, display_monitor_added_delayed_cb, data);
 }
 
 static void
@@ -860,11 +865,6 @@ caja_application_create_desktop_window (CajaApplication *application,
         return NULL;
     }
 
-    /* Hide selection_widget before creating/showing the window on Wayland */
-    if (GDK_IS_WAYLAND_DISPLAY (display)) {
-        gtk_widget_hide (selection_widget);
-    }
-
     window = caja_desktop_window_new_for_monitor (application,
                                                   gdk_display_get_default_screen (display),
                                                   monitor);
@@ -888,9 +888,6 @@ caja_application_create_desktop_window (CajaApplication *application,
         g_list_prepend (caja_application_desktop_windows, window);
     gtk_application_add_window (GTK_APPLICATION (application),
                                 GTK_WINDOW (window));
-
-    /* Show the window after adding it to the application to ensure proper tracking */
-    gtk_widget_show (GTK_WIDGET (window));
 
     return window;
 }

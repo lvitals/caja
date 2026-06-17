@@ -432,6 +432,7 @@ caja_desktop_window_new_for_monitor (CajaApplication *application,
         /* Wayland: explicit realize to trigger the realize signal
          * and connect mate-bg before mapping the window */
         gtk_widget_realize (GTK_WIDGET (window));
+        gtk_widget_show (GTK_WIDGET (window));
     }
 
     /* Point window at the desktop folder.
