@@ -183,6 +183,79 @@ get_desktop_monitor_for_widget (GtkWidget *widget,
 }
 
 static void
+get_wayland_panel_margins (int monitor_index, int *left, int *right, int *top, int *bottom)
+{
+    GSettingsSchemaSource *source;
+    GSettingsSchema *schema;
+
+    *left = *right = *top = *bottom = 0;
+
+    source = g_settings_schema_source_get_default ();
+    if (!source)
+        return;
+
+    /* Check if the panel schemas exist */
+    schema = g_settings_schema_source_lookup (source, "org.mate.panel", TRUE);
+    if (!schema)
+        return;
+    g_settings_schema_unref (schema);
+
+    schema = g_settings_schema_source_lookup (source, "org.mate.panel.toplevel", TRUE);
+    if (!schema)
+        return;
+    g_settings_schema_unref (schema);
+
+    GSettings *panel_settings = g_settings_new ("org.mate.panel");
+    if (panel_settings)
+    {
+        char **toplevel_ids = g_settings_get_strv (panel_settings, "toplevel-id-list");
+        if (toplevel_ids)
+        {
+            for (int i = 0; toplevel_ids[i] != NULL; i++)
+            {
+                char *path = g_strdup_printf ("/org/mate/panel/toplevels/%s/", toplevel_ids[i]);
+                GSettings *toplevel = g_settings_new_with_path ("org.mate.panel.toplevel", path);
+                if (toplevel)
+                {
+                    int p_monitor = g_settings_get_int (toplevel, "monitor");
+                    if (p_monitor == monitor_index)
+                    {
+                        char *orientation = g_settings_get_string (toplevel, "orientation");
+                        gboolean auto_hide = g_settings_get_boolean (toplevel, "auto-hide");
+                        int size = auto_hide ? g_settings_get_int (toplevel, "auto-hide-size") : g_settings_get_int (toplevel, "size");
+
+                        if (orientation)
+                        {
+                            if (g_strcmp0 (orientation, "top") == 0)
+                            {
+                                *top = MAX (*top, size);
+                            }
+                            else if (g_strcmp0 (orientation, "bottom") == 0)
+                            {
+                                *bottom = MAX (*bottom, size);
+                            }
+                            else if (g_strcmp0 (orientation, "left") == 0)
+                            {
+                                *left = MAX (*left, size);
+                            }
+                            else if (g_strcmp0 (orientation, "right") == 0)
+                            {
+                                *right = MAX (*right, size);
+                            }
+                            g_free (orientation);
+                        }
+                    }
+                    g_object_unref (toplevel);
+                }
+                g_free (path);
+            }
+            g_strfreev (toplevel_ids);
+        }
+        g_object_unref (panel_settings);
+    }
+}
+
+static void
 fm_desktop_icon_view_apply_geometry (FMDesktopIconView *desktop_icon_view)
 {
     CajaIconContainer *icon_container;
@@ -210,12 +283,40 @@ fm_desktop_icon_view_apply_geometry (FMDesktopIconView *desktop_icon_view)
     else
     {
         GdkRectangle geometry = {0};
+        GdkRectangle workarea = {0};
         GdkMonitor *monitor;
         monitor = get_desktop_monitor_for_widget (GTK_WIDGET (desktop_icon_view), display);
         gdk_monitor_get_geometry (monitor, &geometry);
+        gdk_monitor_get_workarea (monitor, &workarea);
 
         allocation.width = MAX (geometry.width, 1);
         allocation.height = MAX (geometry.height, 1);
+
+        int left = MAX (0, workarea.x - geometry.x);
+        int top = MAX (0, workarea.y - geometry.y);
+        int right = MAX (0, (geometry.x + geometry.width) - (workarea.x + workarea.width));
+        int bottom = MAX (0, (geometry.y + geometry.height) - (workarea.y + workarea.height));
+
+        int monitor_index = 0;
+        int n_monitors = gdk_display_get_n_monitors (display);
+        for (int j = 0; j < n_monitors; j++)
+        {
+            if (gdk_display_get_monitor (display, j) == monitor)
+            {
+                monitor_index = j;
+                break;
+            }
+        }
+
+        int p_left = 0, p_right = 0, p_top = 0, p_bottom = 0;
+        get_wayland_panel_margins (monitor_index, &p_left, &p_right, &p_top, &p_bottom);
+
+        left = MAX (left, p_left);
+        right = MAX (right, p_right);
+        top = MAX (top, p_top);
+        bottom = MAX (bottom, p_bottom);
+
+        caja_icon_container_set_margins (icon_container, left, right, top, bottom);
     }
 
     gtk_widget_set_size_request (GTK_WIDGET (icon_container),

@@ -434,6 +434,7 @@ eel_background_draw (GtkWidget *widget,
             GdkDisplay *display = gtk_widget_get_display (widget);
             GdkMonitor *monitor = g_object_get_data (G_OBJECT (toplevel), "caja-desktop-monitor");
             GdkRectangle geometry = {0};
+            GdkRectangle workarea = {0};
             GdkRectangle total_geometry = {0};
 
             if (monitor == NULL) {
@@ -444,11 +445,18 @@ eel_background_draw (GtkWidget *widget,
             }
 
             gdk_monitor_get_geometry (monitor, &geometry);
+            gdk_monitor_get_workarea (monitor, &workarea);
             get_total_screen_geometry (display, &total_geometry);
 
+            int win_width = gtk_widget_get_allocated_width (toplevel);
+            int win_height = gtk_widget_get_allocated_height (toplevel);
+
+            int offset_x = (win_width < geometry.width) ? (workarea.x - geometry.x) : 0;
+            int offset_y = (win_height < geometry.height) ? (workarea.y - geometry.y) : 0;
+
             cairo_set_source_surface (cr, self->details->bg_surface,
-                                      -(geometry.x - total_geometry.x),
-                                      -(geometry.y - total_geometry.y));
+                                      -(geometry.x + offset_x - total_geometry.x),
+                                      -(geometry.y + offset_y - total_geometry.y));
         }
         else
         {

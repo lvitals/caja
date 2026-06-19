@@ -396,6 +396,8 @@ caja_desktop_window_new_for_monitor (CajaApplication *application,
 
         gtk_layer_set_namespace (gtkwin, "desktop");
 
+        gtk_layer_set_exclusive_zone (gtkwin, -1);
+
         /*Anchor the desktop to all four corners
          *This is much simpler than on x11 and
          *should always render the desktop across
