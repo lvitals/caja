@@ -183,7 +183,7 @@ get_desktop_monitor_for_widget (GtkWidget *widget,
 }
 
 static void
-get_wayland_panel_margins (int monitor_index, int *left, int *right, int *top, int *bottom)
+get_wayland_panel_margins (int monitor_index, int n_monitors, int *left, int *right, int *top, int *bottom)
 {
     GSettingsSchemaSource *source;
     GSettingsSchema *schema;
@@ -218,7 +218,12 @@ get_wayland_panel_margins (int monitor_index, int *left, int *right, int *top, i
                 if (toplevel)
                 {
                     int p_monitor = g_settings_get_int (toplevel, "monitor");
-                    if (p_monitor == monitor_index)
+                    gboolean monitor_matches;
+
+                    monitor_matches = p_monitor == monitor_index ||
+                                      ((p_monitor < 0 || p_monitor >= n_monitors) && monitor_index == 0);
+
+                    if (monitor_matches)
                     {
                         char *orientation = g_settings_get_string (toplevel, "orientation");
                         gboolean auto_hide = g_settings_get_boolean (toplevel, "auto-hide");
@@ -309,7 +314,7 @@ fm_desktop_icon_view_apply_geometry (FMDesktopIconView *desktop_icon_view)
         }
 
         int p_left = 0, p_right = 0, p_top = 0, p_bottom = 0;
-        get_wayland_panel_margins (monitor_index, &p_left, &p_right, &p_top, &p_bottom);
+        get_wayland_panel_margins (monitor_index, n_monitors, &p_left, &p_right, &p_top, &p_bottom);
 
         left = MAX (left, p_left);
         right = MAX (right, p_right);

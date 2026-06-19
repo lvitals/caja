@@ -361,13 +361,11 @@ icon_set_position_full (CajaIcon *icon,
             window  = gtk_widget_get_window (GTK_WIDGET(container));
             monitor = gdk_display_get_monitor_at_window (gdk_display_get_default(), window);
             gdk_monitor_get_geometry (monitor, &geometry);
-            container_x = 0;
-            container_y = 0;
+            container_x = container->details->left_margin;
+            container_y = container->details->top_margin;
             container_width = geometry.width  - container_x
-                          - container->details->left_margin
                           - container->details->right_margin;
             container_height = geometry.height - container_y
-                           - container->details->top_margin
                            - container->details->bottom_margin;
         }
 
