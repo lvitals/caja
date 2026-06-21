@@ -1,0 +1,3 @@
+i18n.gettext('caja',
+  preset: 'glib'
+)
