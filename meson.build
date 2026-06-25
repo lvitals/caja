@@ -15,6 +15,7 @@ glib_genmarshal = find_program('glib-genmarshal')
 
 # Global compiler flags
 add_project_arguments('-DHAVE_CONFIG_H', language: 'c')
+add_project_arguments('-I' + meson.project_build_root(), language: 'c')
 
 # Version requirements
 gdkpixbuf_req = '>= 2.36.5'
@@ -184,8 +185,16 @@ include_dirs = [
   include_directories('libcaja-private'),
 ]
 
+libegg_deps = [
+  glib_dep,
+  gtk_dep,
+  ice_dep,
+  sm_dep,
+]
+
 subdir('po')
-subdir('mate-submodules')
+subdir('mate-submodules/libegg')
+libegg = egg
 subdir('eel')
 subdir('libcaja-extension')
 subdir('libcaja-private')

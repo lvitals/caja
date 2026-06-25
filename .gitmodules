@@ -1,5 +1,5 @@
 [submodule "mate-submodules"]
 	path = mate-submodules
-	url = https://github.com/mate-desktop/mate-submodules.git
+	url = https://github.com/lvitals/mate-submodules.git
 	ignore = untracked
-	branch = master
+	branch = wayland-support

@@ -5,4 +5,5 @@ option('selinux', type: 'feature', value: 'auto', description: 'Enable SELinux s
 option('self-check', type: 'boolean', value: true, description: 'Build self check tests')
 option('empty-view', type: 'boolean', value: false, description: 'Enable empty view for performance measurements')
 option('packagekit', type: 'boolean', value: true, description: 'Enable PackageKit mimetype installer')
+option('introspection', type: 'feature', value: 'auto', description: 'Build GObject Introspection data')
 option('gtk_doc', type: 'boolean', value: false, description: 'Build API reference documentation')

@@ -47,17 +47,24 @@ libcaja_extension_dep = declare_dependency(
 install_headers(libcaja_extension_headers, subdir: 'caja/libcaja-extension')
 
 # GObject Introspection
-gnome.generate_gir(libcaja_extension,
-  sources: [libcaja_extension_sources, libcaja_extension_headers],
-  namespace: 'Caja',
-  nsversion: '2.0',
-  identifier_prefix: 'Caja',
-  symbol_prefix: 'caja',
-  export_packages: 'libcaja-extension',
-  includes: ['Gtk-3.0', 'Gio-2.0', 'GLib-2.0'],
-  install: true,
-  extra_args: ['--warn-all']
-)
+introspection_opt = get_option('introspection')
+if not introspection_opt.disabled()
+  introspection_dep = dependency('gobject-introspection-1.0', required: introspection_opt.enabled())
+  g_ir_scanner = find_program('g-ir-scanner', required: introspection_opt.enabled())
+  if introspection_dep.found() and g_ir_scanner.found()
+    gnome.generate_gir(libcaja_extension,
+      sources: [libcaja_extension_sources, libcaja_extension_headers],
+      namespace: 'Caja',
+      nsversion: '2.0',
+      identifier_prefix: 'Caja',
+      symbol_prefix: 'caja',
+      export_packages: 'libcaja-extension',
+      includes: ['Gtk-3.0', 'Gio-2.0', 'GLib-2.0'],
+      install: true,
+      extra_args: ['--warn-all']
+    )
+  endif
+endif
 
 # Pkgconfig file
 pc_conf = configuration_data()
