@@ -537,10 +537,16 @@ init_fade (EelBackground *self)
     {
         if (self->details->bg_surface == NULL)
         {
-            cairo_surface_t *start_surface;
-            start_surface = mate_bg_get_surface_from_root (gtk_widget_get_screen (widget));
-            mate_bg_crossfade_set_start_surface (self->details->fade, start_surface);
-            cairo_surface_destroy (start_surface);
+            /* mate_bg_get_surface_from_root() is X11-only; skip on Wayland
+             * so the crossfade starts from a blank surface instead of crashing. */
+            GdkDisplay *display = gtk_widget_get_display (widget);
+            if (GDK_IS_X11_DISPLAY (display))
+            {
+                cairo_surface_t *start_surface;
+                start_surface = mate_bg_get_surface_from_root (gtk_widget_get_screen (widget));
+                mate_bg_crossfade_set_start_surface (self->details->fade, start_surface);
+                cairo_surface_destroy (start_surface);
+            }
         }
         else
         {
