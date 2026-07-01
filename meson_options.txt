@@ -1,6 +1,7 @@
 option('exif', type: 'feature', value: 'auto', description: 'Enable EXIF support using libexif')
 option('xmp', type: 'feature', value: 'auto', description: 'Enable XMP support using exempi')
 option('wayland', type: 'feature', value: 'auto', description: 'Enable Wayland support using gtk-layer-shell')
+option('x11', type: 'feature', value: 'auto', description: 'Allow the Caja X11 runtime backend')
 option('selinux', type: 'feature', value: 'auto', description: 'Enable SELinux support')
 option('self-check', type: 'boolean', value: true, description: 'Build self check tests')
 option('empty-view', type: 'boolean', value: false, description: 'Enable empty view for performance measurements')

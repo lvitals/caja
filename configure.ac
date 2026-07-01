@@ -34,6 +34,15 @@ AC_CONFIG_SRCDIR(src)
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_MACRO_DIR([m4])
 
+AC_ARG_ENABLE([x11],
+    AS_HELP_STRING([--disable-x11],
+                   [disable the Caja X11 runtime backend and XWayland fallback]),
+    [enable_x11=$enableval],
+    [enable_x11=yes])
+AS_IF([test "x$enable_x11" = "xyes"], [
+    AC_DEFINE([HAVE_X11], [1], [Allow the Caja X11 runtime backend])
+])
+
 MATE_COMPILE_WARNINGS
 
 AM_INIT_AUTOMAKE([1.9 tar-ustar dist-xz no-dist-gzip check-news])
@@ -203,6 +212,10 @@ if test "x$have_wayland" = "xyes"; then
   AC_DEFINE(HAVE_WAYLAND, 1, [Have the Wayland development library])
 fi
 
+AS_IF([test "x$enable_x11" != "xyes" && test "x$have_wayland" != "xyes"], [
+  AC_MSG_ERROR([at least one display backend must be enabled])
+])
+
 dnl ****************************
 dnl *** Check for libselinux ***
 dnl ****************************
@@ -348,6 +361,7 @@ Configure summary:
     Native Language support:      $USE_NLS
     Self check:                   $msg_self_check
     Wayland support:              ${have_wayland}
+    X11 runtime backend:          ${enable_x11}
 
     caja-extension documentation: ${enable_gtk_doc}
     caja-extension introspection: ${found_introspection}

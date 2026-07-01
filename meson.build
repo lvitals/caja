@@ -86,6 +86,15 @@ if not wayland_opt.disabled()
   endif
 endif
 
+# Caja still contains compile-time X11 compatibility code in its internal
+# libraries. Disabling this option prevents runtime fallback to XWayland.
+x11_opt = get_option('x11')
+have_x11 = not x11_opt.disabled()
+
+if not have_x11 and not have_wayland
+  error('At least one display backend must be enabled')
+endif
+
 # SELinux
 selinux_opt = get_option('selinux')
 have_selinux = false
@@ -127,6 +136,9 @@ if have_xmp
 endif
 if have_wayland
   conf.set('HAVE_WAYLAND', 1)
+endif
+if have_x11
+  conf.set('HAVE_X11', 1)
 endif
 if have_selinux
   conf.set('HAVE_SELINUX', 1)

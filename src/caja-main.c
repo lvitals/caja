@@ -250,6 +250,15 @@ main (int argc, char *argv[])
 
 	g_set_prgname ("caja");
 
+#if defined(HAVE_WAYLAND) && !defined(HAVE_X11)
+	/* A native-only build must fail instead of silently starting XWayland. */
+	gdk_set_allowed_backends ("wayland");
+#elif defined(HAVE_WAYLAND) && defined(HAVE_X11)
+	gdk_set_allowed_backends ("wayland,x11");
+#elif defined(HAVE_X11)
+	gdk_set_allowed_backends ("x11");
+#endif
+
 	if (g_file_test (DATADIR "/applications/caja.desktop", G_FILE_TEST_EXISTS)) {
 		egg_set_desktop_file (DATADIR "/applications/caja.desktop");
 	}
@@ -275,4 +284,3 @@ main (int argc, char *argv[])
 
 	return retval;
 }
-
